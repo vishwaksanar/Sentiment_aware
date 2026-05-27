@@ -10,12 +10,17 @@ import argparse
 import json
 import os
 import re
+import sys
 import time
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
 import requests
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from sentiment_aware.preprocessing import normalize_instruction_key
 from sentiment_aware.taxonomy import UNIFIED_TAXONOMY

@@ -1,6 +1,7 @@
 import unittest
 
 from sentiment_aware.alignment import HeuristicAlignmentEngine, semantic_category_match
+from sentiment_aware.io import normalize_record
 from sentiment_aware.preference import build_dpo_records, build_dpo_records_from_llm_evaluations
 from sentiment_aware.preprocessing import dedupe_by_instruction
 from sentiment_aware.schemas import RawSample
@@ -78,6 +79,20 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(records[0]["category"], "anxiety")
         self.assertEqual(records[0]["chosen"], "That sounds exhausting. Try grounding slowly.")
         self.assertEqual(records[0]["rejected"], "Just stop worrying.")
+
+    def test_phase_three_instruction_wrapper_is_removed(self):
+        sample = normalize_record(
+            {
+                "instruction": (
+                    "The user is feeling anxiety. Write an empathetic and "
+                    "supportive response.\n\nUser: I get nervous before therapy."
+                ),
+                "output": "That sounds understandable.",
+            }
+        )
+
+        self.assertEqual(sample.instruction, "I get nervous before therapy.")
+        self.assertEqual(sample.label, "anxiety")
 
 
 if __name__ == "__main__":

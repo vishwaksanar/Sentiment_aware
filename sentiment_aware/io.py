@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Iterable
 
+from .preprocessing import extract_wrapper_label, strip_instruction_wrapper
 from .schemas import RawSample
 
 
@@ -65,6 +66,10 @@ def normalize_record(record: dict, source: str = "unknown") -> RawSample:
         "sentiment",
         "intent",
     )
+    wrapper_label = extract_wrapper_label(instruction)
+    instruction = strip_instruction_wrapper(instruction)
+    if not label and wrapper_label:
+        label = wrapper_label
 
     return RawSample(
         instruction=clean_text(instruction),
