@@ -34,6 +34,64 @@ def build_dpo_records(samples: Iterable[ValidatedSample]) -> list[dict[str, str]
     return records
 
 
+def build_dpo_records_from_llm_evaluations(
+    records: Iterable[dict[str, object]],
+) -> list[dict[str, str]]:
+    """Build DPO records from LLM evaluation output.
+
+    This path uses the LLM-corrected category and response. If the LLM revised
+    the response, the original response becomes the rejected answer.
+    """
+
+    dpo_records: list[dict[str, str]] = []
+    for record in records:
+        instruction = str(record.get("instruction", "")).strip()
+        category = str(
+            record.get("final_category") or record.get("original_category") or "general_support"
+        ).strip()
+        chosen = str(record.get("final_response") or record.get("original_response") or "").strip()
+        original_response = str(record.get("original_response") or "").strip()
+        rejected = extract_rejected_from_llm_record(record, chosen, original_response)
+
+        if not instruction or not chosen or not rejected:
+            continue
+
+        dpo_records.append(
+            {
+                "prompt": llama_chat_prompt(instruction, category),
+                "chosen": chosen,
+                "rejected": rejected,
+                "category": category,
+                "source": str(record.get("source", "llm_evaluation")),
+                "original_category": str(record.get("original_category", "")),
+                "original_response": original_response,
+                "construction_label": construction_label(chosen, original_response),
+            }
+        )
+    return dpo_records
+
+
+def extract_rejected_from_llm_record(
+    record: dict[str, object],
+    chosen: str,
+    original_response: str,
+) -> str:
+    if original_response and original_response != chosen:
+        return original_response
+
+    for key in ("rejected", "bad_response", "weak_response", "negative_response"):
+        value = record.get(key)
+        if value:
+            return str(value).strip()
+    return GENERIC_REJECTED_RESPONSE
+
+
+def construction_label(chosen: str, original_response: str) -> str:
+    if original_response and original_response != chosen:
+        return "llm_revision_used_as_good"
+    return "llm_retained_original_as_good"
+
+
 def extract_rejected(sample: ValidatedSample) -> str:
     metadata = sample.metadata or {}
     for key in ("rejected", "bad_response", "weak_response", "negative_response"):

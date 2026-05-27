@@ -1,7 +1,8 @@
 import unittest
 
 from sentiment_aware.alignment import HeuristicAlignmentEngine, semantic_category_match
-from sentiment_aware.preference import build_dpo_records
+from sentiment_aware.preference import build_dpo_records, build_dpo_records_from_llm_evaluations
+from sentiment_aware.preprocessing import dedupe_by_instruction
 from sentiment_aware.schemas import RawSample
 from sentiment_aware.validation import SemanticValidator
 
@@ -44,6 +45,39 @@ class PipelineTests(unittest.TestCase):
 
         self.assertEqual(category, "overthinking")
         self.assertGreater(score, 0)
+
+    def test_deduplication_keeps_one_sample_per_instruction(self):
+        samples = [
+            RawSample(instruction="I feel anxious.", response="First response"),
+            RawSample(instruction="I feel anxious!", response="Second response"),
+            RawSample(instruction="I feel sad.", response="Third response"),
+        ]
+
+        deduped = dedupe_by_instruction(samples)
+
+        self.assertEqual(len(deduped), 2)
+        self.assertEqual(deduped[0].response, "First response")
+        self.assertEqual(deduped[1].response, "Third response")
+
+    def test_llm_evaluation_dpo_uses_corrected_category_and_response(self):
+        records = build_dpo_records_from_llm_evaluations(
+            [
+                {
+                    "instruction": "I feel anxious all the time",
+                    "source": "test",
+                    "original_category": "general_support",
+                    "final_category": "anxiety",
+                    "original_response": "Just stop worrying.",
+                    "final_response": "That sounds exhausting. Try grounding slowly.",
+                }
+            ]
+        )
+
+        self.assertEqual(len(records), 1)
+        self.assertIn("Category: anxiety", records[0]["prompt"])
+        self.assertEqual(records[0]["category"], "anxiety")
+        self.assertEqual(records[0]["chosen"], "That sounds exhausting. Try grounding slowly.")
+        self.assertEqual(records[0]["rejected"], "Just stop worrying.")
 
 
 if __name__ == "__main__":

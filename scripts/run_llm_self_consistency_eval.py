@@ -17,31 +17,66 @@ from typing import Any
 
 import requests
 
+from sentiment_aware.preprocessing import normalize_instruction_key
+from sentiment_aware.taxonomy import UNIFIED_TAXONOMY
+
+
+CATEGORIES = tuple(UNIFIED_TAXONOMY)
 
 SYSTEM_PROMPT = """You are an expert evaluator for mental-health support data.
 Evaluate whether the assistant response is safe, empathetic, and aligned with
-the assigned category. Return only JSON with keys: score, decision, reason,
-safety_concern. score must be 0.0 to 1.0. decision must be retain, revise, or
-drop. safety_concern must be true or false."""
+the assigned category. Do not rewrite the assistant response. Check whether the
+assigned category is correct for the user/instruction and response.
+
+Return only JSON with keys: score, decision, reason, safety_concern,
+category_match, suggested_category, revised_response.
+- score must be 0.0 to 1.0.
+- decision must be retain, revise, or drop.
+- safety_concern must be true or false.
+- category_match must be true if the assigned category is acceptable.
+- suggested_category must be one of the allowed categories. If category_match
+  is true, repeat the assigned category.
+- revised_response must be an empty string when decision is retain.
+- revised_response must contain a safer, more empathetic replacement response
+  when decision is revise or drop."""
 
 
 def build_user_prompt(sample: dict[str, Any]) -> str:
     return (
+        f"Allowed categories: {', '.join(CATEGORIES)}\n\n"
         f"Assigned category: {sample.get('category', '')}\n"
         f"Safety flags: {sample.get('safety_flags', [])}\n\n"
         f"User/instruction:\n{sample.get('instruction', '')}\n\n"
         f"Assistant response:\n{sample.get('response', '')}\n\n"
         "Judge the sample for DPO dataset quality. Prefer retain only when the "
-        "response is clearly supportive, relevant, and safe for the category."
+        "response is clearly supportive, relevant, safe, and correctly "
+        "categorized. If the assigned category is misplaced, set "
+        "category_match=false and choose the best suggested_category from the "
+        "allowed categories. If the response is inappropriate, unsafe, vague, "
+        "dismissive, or not empathetic enough, set decision to revise or drop "
+        "and provide a revised_response. The revised response should be "
+        "empathetic, concise, non-diagnostic, and safety-aware."
     )
 
 
-def load_jsonl(path: Path, limit: int) -> list[dict[str, Any]]:
+def load_jsonl(
+    path: Path,
+    limit: int,
+    dedupe_instruction: bool = True,
+) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
+    seen: set[str] = set()
     with path.open("r", encoding="utf-8") as handle:
         for line in handle:
-            if line.strip():
-                records.append(json.loads(line))
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            if dedupe_instruction:
+                key = normalize_instruction_key(str(record.get("instruction", "")))
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+            records.append(record)
             if len(records) >= limit:
                 break
     return records
@@ -62,11 +97,17 @@ def normalize_vote(payload: dict[str, Any]) -> dict[str, Any]:
     decision = str(payload.get("decision", "revise")).lower().strip()
     if decision not in {"retain", "revise", "drop"}:
         decision = "revise"
+    suggested_category = str(payload.get("suggested_category", "")).strip()
+    if suggested_category not in CATEGORIES:
+        suggested_category = "general_support"
     return {
         "score": max(0.0, min(1.0, score)),
         "decision": decision,
         "reason": str(payload.get("reason", "")).strip(),
         "safety_concern": bool(payload.get("safety_concern", False)),
+        "category_match": bool(payload.get("category_match", False)),
+        "suggested_category": suggested_category,
+        "revised_response": str(payload.get("revised_response", "")).strip(),
     }
 
 
@@ -106,14 +147,34 @@ def call_chat_completion(
 def aggregate_votes(votes: list[dict[str, Any]]) -> dict[str, Any]:
     decisions = Counter(vote["decision"] for vote in votes)
     majority_decision, agreement_count = decisions.most_common(1)[0]
+    suggested_categories = Counter(vote["suggested_category"] for vote in votes)
+    majority_category, category_agreement_count = suggested_categories.most_common(1)[0]
     mean_score = sum(vote["score"] for vote in votes) / len(votes)
     return {
         "mean_score": round(mean_score, 4),
         "majority_decision": majority_decision,
         "agreement_count": agreement_count,
+        "majority_suggested_category": majority_category,
+        "category_agreement_count": category_agreement_count,
+        "category_match_votes": sum(1 for vote in votes if vote["category_match"]),
         "num_votes": len(votes),
         "safety_concern_votes": sum(1 for vote in votes if vote["safety_concern"]),
     }
+
+
+def choose_final_response(original_response: str, votes: list[dict[str, Any]]) -> str:
+    retain_votes = sum(1 for vote in votes if vote["decision"] == "retain")
+    if retain_votes > len(votes) / 2:
+        return original_response
+
+    revised_candidates = [
+        vote["revised_response"]
+        for vote in votes
+        if vote["decision"] in {"revise", "drop"} and vote["revised_response"]
+    ]
+    if not revised_candidates:
+        return original_response
+    return revised_candidates[0]
 
 
 def parse_args() -> argparse.Namespace:
@@ -131,6 +192,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY", ""))
     parser.add_argument("--model", default=os.environ.get("OPENAI_MODEL", ""))
     parser.add_argument("--sleep", type=float, default=0.0)
+    parser.add_argument(
+        "--allow-duplicate-instructions",
+        action="store_true",
+        help="Sample rows as-is instead of keeping one row per instruction",
+    )
     return parser.parse_args()
 
 
@@ -141,7 +207,11 @@ def main() -> int:
     if "api.openai.com" in args.base_url and not args.api_key:
         raise SystemExit("Missing API key. Set OPENAI_API_KEY or pass --api-key.")
 
-    samples = load_jsonl(args.input, args.limit)
+    samples = load_jsonl(
+        args.input,
+        args.limit,
+        dedupe_instruction=not args.allow_duplicate_instructions,
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", encoding="utf-8") as handle:
         for index, sample in enumerate(samples):
@@ -159,16 +229,20 @@ def main() -> int:
                 votes.append(vote)
                 if args.sleep:
                     time.sleep(args.sleep)
+            summary = aggregate_votes(votes)
+            original_response = sample.get("response", "")
             result = {
                 "sample_index": index,
                 "source": sample.get("source"),
-                "category": sample.get("category"),
+                "original_category": sample.get("category"),
+                "final_category": summary["majority_suggested_category"],
                 "heuristic_confidence": sample.get("confidence"),
                 "safety_flags": sample.get("safety_flags", []),
                 "instruction": sample.get("instruction", ""),
-                "response": sample.get("response", ""),
+                "original_response": original_response,
+                "final_response": choose_final_response(original_response, votes),
                 "votes": votes,
-                "self_consistency": aggregate_votes(votes),
+                "self_consistency": summary,
             }
             handle.write(json.dumps(result, ensure_ascii=False) + "\n")
 
