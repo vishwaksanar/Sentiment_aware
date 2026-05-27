@@ -9,6 +9,7 @@ from pathlib import Path
 from .alignment import HeuristicAlignmentEngine
 from .dataset_stats import analyze_dataset, format_stats_table, format_top_emotions
 from .evaluation import preference_quality_summary
+from .inference import InferenceConfig, compare_base_and_adapter
 from .io import load_raw_samples, save_jsonl
 from .preference import (
     build_dpo_records,
@@ -82,6 +83,23 @@ def build_parser() -> argparse.ArgumentParser:
     stats.add_argument("--output", default=None, help="Optional JSON summary output path")
     stats.add_argument("--top-n", type=int, default=15, help="Top emotion labels to print")
 
+    infer = subparsers.add_parser(
+        "compare-inference",
+        help="Compare base and DPO-adapter Llama responses",
+    )
+    infer.add_argument("user_text", help="User message to answer")
+    infer.add_argument("--category", default="general_support", help="Distress category")
+    infer.add_argument(
+        "--model-name",
+        default="unsloth/Llama-3.2-3B-Instruct",
+        help="Base model name or path",
+    )
+    infer.add_argument("--adapter-path", required=True, help="DPO LoRA adapter path")
+    infer.add_argument("--max-seq-length", type=int, default=2048)
+    infer.add_argument("--max-new-tokens", type=int, default=200)
+    infer.add_argument("--temperature", type=float, default=0.7)
+    infer.add_argument("--top-p", type=float, default=0.9)
+
     return parser
 
 
@@ -116,6 +134,30 @@ def main(argv: list[str] | None = None) -> int:
                 encoding="utf-8",
             )
             print(f"\nsaved={args.output}")
+        return 0
+
+    if args.command == "compare-inference":
+        config = InferenceConfig(
+            model_name=args.model_name,
+            adapter_path=args.adapter_path,
+            max_seq_length=args.max_seq_length,
+            max_new_tokens=args.max_new_tokens,
+            temperature=args.temperature,
+            top_p=args.top_p,
+        )
+        base_response, dpo_response = compare_base_and_adapter(
+            args.user_text,
+            args.category,
+            config,
+        )
+        print("=" * 80)
+        print("BASE MODEL RESPONSE")
+        print("=" * 80)
+        print(base_response)
+        print("\n" + "=" * 80)
+        print("DPO-ALIGNED MODEL RESPONSE")
+        print("=" * 80)
+        print(dpo_response)
         return 0
 
     if args.command == "build-dpo-from-llm":

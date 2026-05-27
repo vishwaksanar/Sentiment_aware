@@ -5,6 +5,7 @@ from pathlib import Path
 
 from sentiment_aware.alignment import HeuristicAlignmentEngine, semantic_category_match
 from sentiment_aware.dataset_stats import analyze_dataset
+from sentiment_aware.inference import InferenceConfig
 from sentiment_aware.io import normalize_record
 from sentiment_aware.preference import build_dpo_records, build_dpo_records_from_llm_evaluations
 from sentiment_aware.preprocessing import dedupe_by_instruction
@@ -116,6 +117,13 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(stats.unique_emotion_labels, 1)
         self.assertEqual(emotions["anxiety"], 1)
         self.assertEqual(stats.support_seeking_queries_pct, 100.0)
+
+    def test_inference_config_defaults_to_llama_model(self):
+        config = InferenceConfig(adapter_path="/tmp/adapter")
+
+        self.assertEqual(config.model_name, "unsloth/Llama-3.2-3B-Instruct")
+        self.assertEqual(config.adapter_path, "/tmp/adapter")
+        self.assertEqual(config.max_new_tokens, 200)
 
 
 if __name__ == "__main__":
