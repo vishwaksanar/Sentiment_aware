@@ -18,6 +18,7 @@ from .preference import (
     split_records,
 )
 from .preprocessing import dedupe_by_instruction
+from .sampling import stratified_sample
 from .validation import SemanticValidator
 
 
@@ -100,6 +101,16 @@ def build_parser() -> argparse.ArgumentParser:
     infer.add_argument("--temperature", type=float, default=0.7)
     infer.add_argument("--top-p", type=float, default=0.9)
 
+    sample = subparsers.add_parser(
+        "sample-aligned",
+        help="Stratified sample from heuristic-aligned JSONL records",
+    )
+    sample.add_argument("input", help="Aligned JSONL input path")
+    sample.add_argument("output", help="Sampled JSONL output path")
+    sample.add_argument("--size", type=int, default=1000, help="Maximum sample size")
+    sample.add_argument("--label-key", default="category", help="Field to stratify by")
+    sample.add_argument("--seed", type=int, default=42)
+
     return parser
 
 
@@ -175,6 +186,22 @@ def main(argv: list[str] | None = None) -> int:
             encoding="utf-8",
         )
         print(json.dumps(summary, indent=2))
+        return 0
+
+    if args.command == "sample-aligned":
+        records = [
+            json.loads(line)
+            for line in Path(args.input).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        sampled = stratified_sample(
+            records,
+            label_key=args.label_key,
+            sample_size=args.size,
+            seed=args.seed,
+        )
+        save_jsonl(sampled, args.output)
+        print(f"sampled={len(sampled)} input={len(records)} label_key={args.label_key}")
         return 0
 
     samples = load_raw_samples(args.input, getattr(args, "source", None))

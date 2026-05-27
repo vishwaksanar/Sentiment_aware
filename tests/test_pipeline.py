@@ -9,6 +9,7 @@ from sentiment_aware.inference import InferenceConfig
 from sentiment_aware.io import normalize_record
 from sentiment_aware.preference import build_dpo_records, build_dpo_records_from_llm_evaluations
 from sentiment_aware.preprocessing import dedupe_by_instruction
+from sentiment_aware.sampling import stratified_sample
 from sentiment_aware.schemas import RawSample
 from sentiment_aware.validation import SemanticValidator
 
@@ -124,6 +125,19 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(config.model_name, "unsloth/Llama-3.2-3B-Instruct")
         self.assertEqual(config.adapter_path, "/tmp/adapter")
         self.assertEqual(config.max_new_tokens, 200)
+
+    def test_stratified_sample_caps_size_and_keeps_categories(self):
+        records = (
+            [{"category": "anxiety", "id": f"a{index}"} for index in range(10)]
+            + [{"category": "stress", "id": f"s{index}"} for index in range(10)]
+            + [{"category": "grief", "id": f"g{index}"} for index in range(10)]
+        )
+
+        sampled = stratified_sample(records, sample_size=9, seed=7)
+        categories = {record["category"] for record in sampled}
+
+        self.assertEqual(len(sampled), 9)
+        self.assertEqual(categories, {"anxiety", "stress", "grief"})
 
 
 if __name__ == "__main__":
