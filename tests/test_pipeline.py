@@ -1,6 +1,10 @@
 import unittest
+import json
+import tempfile
+from pathlib import Path
 
 from sentiment_aware.alignment import HeuristicAlignmentEngine, semantic_category_match
+from sentiment_aware.dataset_stats import analyze_dataset
 from sentiment_aware.io import normalize_record
 from sentiment_aware.preference import build_dpo_records, build_dpo_records_from_llm_evaluations
 from sentiment_aware.preprocessing import dedupe_by_instruction
@@ -93,6 +97,25 @@ class PipelineTests(unittest.TestCase):
 
         self.assertEqual(sample.instruction, "I get nervous before therapy.")
         self.assertEqual(sample.label, "anxiety")
+
+    def test_dataset_stats_use_cleaned_instruction_text(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "sample.jsonl"
+            row = {
+                "instruction": (
+                    "The user is feeling anxiety. Write an empathetic and "
+                    "supportive response.\n\nUser: How can I calm down?"
+                ),
+                "output": "You can try to breathe slowly.",
+            }
+            path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+            stats, emotions = analyze_dataset("sample", path)
+
+        self.assertEqual(stats.samples, 1)
+        self.assertEqual(stats.unique_emotion_labels, 1)
+        self.assertEqual(emotions["anxiety"], 1)
+        self.assertEqual(stats.support_seeking_queries_pct, 100.0)
 
 
 if __name__ == "__main__":

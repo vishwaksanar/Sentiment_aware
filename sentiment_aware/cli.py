@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from .alignment import HeuristicAlignmentEngine
+from .dataset_stats import analyze_dataset, format_stats_table, format_top_emotions
 from .evaluation import preference_quality_summary
 from .io import load_raw_samples, save_jsonl
 from .preference import (
@@ -72,11 +73,50 @@ def build_parser() -> argparse.ArgumentParser:
         help="Keep only one sample per normalized instruction",
     )
 
+    stats = subparsers.add_parser("stats", help="Summarize raw input datasets")
+    stats.add_argument(
+        "datasets",
+        nargs="+",
+        help="Dataset specs as name=path, for example counselling=data.jsonl",
+    )
+    stats.add_argument("--output", default=None, help="Optional JSON summary output path")
+    stats.add_argument("--top-n", type=int, default=15, help="Top emotion labels to print")
+
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.command == "stats":
+        summaries = []
+        emotions = {}
+        for spec in args.datasets:
+            name, path = parse_dataset_spec(spec)
+            summary, emotion_counter = analyze_dataset(name, path)
+            summaries.append(summary)
+            emotions[name] = emotion_counter
+
+        print("\n========== DATASET SUMMARY ==========\n")
+        print(format_stats_table(summaries))
+        print("\n========== TOP EMOTION LABELS ==========")
+        print(format_top_emotions(emotions, limit=args.top_n))
+
+        if args.output:
+            payload = {
+                "summary": [summary.to_dict() for summary in summaries],
+                "top_emotions": {
+                    name: dict(counter.most_common(args.top_n))
+                    for name, counter in emotions.items()
+                },
+            }
+            Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+            Path(args.output).write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            print(f"\nsaved={args.output}")
+        return 0
 
     if args.command == "build-dpo-from-llm":
         records = [
@@ -132,6 +172,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(json.dumps(summary, indent=2))
     return 0
+
+
+def parse_dataset_spec(spec: str) -> tuple[str, str]:
+    if "=" not in spec:
+        path = spec
+        return Path(path).stem, path
+    name, path = spec.split("=", 1)
+    return name.strip(), path.strip()
 
 
 if __name__ == "__main__":
